@@ -27,8 +27,8 @@ python -m unittest -v test_server
 
 The `render.yaml` Blueprint describes a paid Python web service, generated secret, HTTPS-only cookies, health check, and 1 GB persistent disk for the SQLite database. The disk is required; do not switch this service to an ephemeral free instance. Render's persistent disk is single-instance storage, so keep the service at one instance.
 
-1. Push this folder to a private GitHub repository. This workspace currently has no Git installation or remote repository configured.
-2. In Render, create a new Blueprint instance and connect that repository. Review the service and persistent-disk pricing before confirming deployment.
+1. Connect the public GitHub repository `amulesley628-collab/investIT` to Render as a new Blueprint. Review the service and persistent-disk pricing before confirming deployment.
+2. Future source changes must be committed and pushed to the repository's `main` branch to trigger updates. Git is not installed in this workspace, so use GitHub's web editor/upload flow or install Git before pushing locally.
 3. After the first deploy, open the service Shell and run `python server.py init-admin` to provision the business administrator. Do not make the first public signup an administrator.
 4. Set a custom domain in the Render service settings after registering it, then follow Render's displayed DNS instructions at your registrar. Domain registration and DNS changes are not included in this project.
 
