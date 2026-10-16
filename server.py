@@ -11,6 +11,7 @@ import time
 import uuid
 from collections import defaultdict, deque
 from contextlib import contextmanager
+from collections.abc import Mapping
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from functools import wraps
 from pathlib import Path
@@ -18,14 +19,22 @@ from threading import Lock
 from typing import Any
 
 from flask import Flask, g, jsonify, request, send_from_directory, session
+import psycopg
+from psycopg.rows import dict_row
 from werkzeug.security import check_password_hash, generate_password_hash
 from waitress import serve
 
 BASE_DIR = Path(__file__).resolve().parent
 INSTANCE_DIR = BASE_DIR / "instance"
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+PREVIEW_MODE = os.environ.get("INVESTIT_PREVIEW_MODE", "0") == "1"
 DATABASE = Path(os.environ.get("INVESTIT_DATABASE", INSTANCE_DIR / "investit.sqlite3"))
 INSTANCE_DIR.mkdir(parents=True, exist_ok=True)
-DATABASE.parent.mkdir(parents=True, exist_ok=True)
+if not DATABASE_URL:
+    DATABASE.parent.mkdir(parents=True, exist_ok=True)
+
+DATABASE_ERRORS = (sqlite3.Error, psycopg.Error)
+DATABASE_INTEGRITY_ERRORS = (sqlite3.IntegrityError, psycopg.errors.UniqueViolation)
 
 PRODUCTS = [
     {"id": "electrical-gadgets", "name": "Electrical gadgets", "price_pesewas": 8000, "daily_pesewas": 500, "duration_days": 30},
@@ -107,12 +116,54 @@ _login_attempts: dict[str, deque[float]] = defaultdict(deque)
 _login_lock = Lock()
 
 
-def connect_db() -> sqlite3.Connection:
+class DatabaseConnection:
+    def __init__(self, connection: Any, *, postgres: bool):
+        self.raw = connection
+        self.postgres = postgres
+
+    def execute(self, sql: str, parameters: tuple[Any, ...] = ()):
+        if self.postgres:
+            sql = sql.replace("?", "%s")
+        return self.raw.execute(sql, parameters)
+
+    def executescript(self, script: str) -> None:
+        for statement in script.split(";"):
+            if statement.strip():
+                self.execute(statement)
+
+    @contextmanager
+    def transaction(self):
+        if self.postgres:
+            with self.raw.transaction():
+                yield self
+            return
+        self.execute("BEGIN IMMEDIATE")
+        try:
+            yield self
+            self.raw.commit()
+        except Exception:
+            self.raw.rollback()
+            raise
+
+    def commit(self) -> None:
+        self.raw.commit()
+
+    def rollback(self) -> None:
+        self.raw.rollback()
+
+    def close(self) -> None:
+        self.raw.close()
+
+
+def connect_db() -> DatabaseConnection:
+    if DATABASE_URL:
+        connection = psycopg.connect(DATABASE_URL, autocommit=True, row_factory=dict_row, connect_timeout=10)
+        return DatabaseConnection(connection, postgres=True)
     connection = sqlite3.connect(DATABASE, timeout=10, isolation_level=None)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
     connection.execute("PRAGMA journal_mode = WAL")
-    return connection
+    return DatabaseConnection(connection, postgres=False)
 
 
 @contextmanager
@@ -132,13 +183,8 @@ def initialize_database() -> None:
 @contextmanager
 def atomic():
     connection = get_db()
-    connection.execute("BEGIN IMMEDIATE")
-    try:
+    with connection.transaction():
         yield connection
-        connection.commit()
-    except Exception:
-        connection.rollback()
-        raise
 
 
 @app.before_request
@@ -158,7 +204,7 @@ def close_database(_error: BaseException | None) -> None:
         connection.close()
 
 
-def get_db() -> sqlite3.Connection:
+def get_db() -> DatabaseConnection:
     if "db" not in g:
         g.db = connect_db()
     return g.db
@@ -194,7 +240,7 @@ def parse_amount(value: Any) -> int:
     return int(amount * 100)
 
 
-def public_user(row: sqlite3.Row) -> dict[str, Any]:
+def public_user(row: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "id": row["id"], "name": row["name"], "phone": row["phone"],
         "role": row["role"], "balance_pesewas": row["balance_pesewas"],
@@ -202,7 +248,7 @@ def public_user(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
-def current_user() -> sqlite3.Row | None:
+def current_user() -> Mapping[str, Any] | None:
     user_id = session.get("user_id")
     if not user_id:
         return None
@@ -234,7 +280,7 @@ def admin_required(function):
 
 
 def create_transaction(
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
     user_id: str,
     transaction_type: str,
     amount_pesewas: int,
@@ -292,7 +338,7 @@ def accrue_dividends(user_id: str | None = None) -> None:
                 )
 
 
-def api_transaction(row: sqlite3.Row) -> dict[str, Any]:
+def api_transaction(row: Mapping[str, Any]) -> dict[str, Any]:
     return {key: row[key] for key in (
         "id", "user_id", "type", "amount_pesewas", "status", "description",
         "reference", "provider", "payout_phone", "admin_id", "created_at", "updated_at",
@@ -321,7 +367,7 @@ def index():
 def health():
     try:
         get_db().execute("SELECT 1")
-    except sqlite3.Error:
+    except DATABASE_ERRORS:
         return jsonify(status="unhealthy"), 503
     return jsonify(status="ok")
 
@@ -361,7 +407,7 @@ def register():
                 "INSERT INTO users (id, name, phone, password_hash, role, created_at) VALUES (?, ?, ?, ?, 'investor', ?)" ,
                 (user_id, name, phone, generate_password_hash(password, method="scrypt"), int(time.time())),
             )
-    except sqlite3.IntegrityError:
+    except DATABASE_INTEGRITY_ERRORS:
         return fail("An account already exists for that phone number.", 409)
     session.clear()
     session.permanent = True
@@ -404,7 +450,8 @@ def logout():
 @app.get("/api/dashboard")
 @login_required
 def dashboard():
-    accrue_dividends(g.user["id"])
+    if not PREVIEW_MODE:
+        accrue_dividends(g.user["id"])
     connection = get_db()
     user = connection.execute("SELECT * FROM users WHERE id = ?", (g.user["id"],)).fetchone()
     transactions = connection.execute(
@@ -421,7 +468,7 @@ def dashboard():
         (user["id"],),
     ).fetchall()
     return jsonify(
-        user=public_user(user), products=PRODUCTS,
+        user=public_user(user), products=PRODUCTS, preview_mode=PREVIEW_MODE,
         transactions=[api_transaction(row) for row in transactions],
         investments=[{key: row[key] for key in (
             "id", "product_id", "product_name", "price_pesewas", "daily_pesewas",
@@ -434,6 +481,8 @@ def dashboard():
 @app.post("/api/deposits")
 @login_required
 def request_deposit():
+    if PREVIEW_MODE:
+        return fail("Deposits are disabled on this free preview deployment.", 503)
     data = request_data()
     try:
         amount = parse_amount(data.get("amount"))
@@ -453,6 +502,8 @@ def request_deposit():
 @app.post("/api/withdrawals")
 @login_required
 def request_withdrawal():
+    if PREVIEW_MODE:
+        return fail("Withdrawals are disabled on this free preview deployment.", 503)
     data = request_data()
     try:
         amount = parse_amount(data.get("amount"))
@@ -480,6 +531,8 @@ def request_withdrawal():
 @app.post("/api/investments")
 @login_required
 def purchase_investment():
+    if PREVIEW_MODE:
+        return fail("Investments are disabled on this free preview deployment.", 503)
     data = request_data()
     product = next((item for item in PRODUCTS if item["id"] == data.get("product_id")), None)
     if product is None:
@@ -511,8 +564,9 @@ def purchase_investment():
 @admin_required
 def admin_dashboard():
     users = get_db().execute("SELECT * FROM users ORDER BY created_at").fetchall()
-    for user in users:
-        accrue_dividends(user["id"])
+    if not PREVIEW_MODE:
+        for user in users:
+            accrue_dividends(user["id"])
     connection = get_db()
     transactions = connection.execute(
         """SELECT t.*, u.name AS user_name, u.phone AS user_phone
@@ -529,6 +583,8 @@ def admin_dashboard():
 @app.post("/api/admin/requests/<transaction_id>/review")
 @admin_required
 def review_request(transaction_id: str):
+    if PREVIEW_MODE:
+        return fail("Payment settlement is disabled on this free preview deployment.", 503)
     action = str(request_data().get("action", ""))
     if action not in {"approve", "reject", "paid"}:
         return fail("Choose approve, reject, or paid.")
@@ -566,6 +622,8 @@ def review_request(transaction_id: str):
 @app.post("/api/admin/users/<user_id>/balance")
 @admin_required
 def adjust_balance(user_id: str):
+    if PREVIEW_MODE:
+        return fail("Balance adjustments are disabled on this free preview deployment.", 503)
     data = request_data()
     action = str(data.get("action", ""))
     if action not in {"credit", "debit"}:

@@ -1,6 +1,6 @@
 # investIT
 
-A server-backed Ghanaian investment account and manual settlement portal. Investor accounts, balances, investments, messages, and transaction history are stored in SQLite on the server. Public registration always creates an investor account; an administrator must be created separately from the command line.
+A server-backed Ghanaian investment account and manual settlement portal. Local development uses SQLite; hosted deployments can use PostgreSQL through `DATABASE_URL`. Public registration always creates an investor account; an administrator must be created separately from the command line.
 
 ## Run locally
 
@@ -23,16 +23,20 @@ Run the automated ledger tests with:
 python -m unittest -v test_server
 ```
 
-## Deploy on Render
+## Free Preview Deployment
 
-The `render.yaml` Blueprint describes a paid Python web service, generated secret, HTTPS-only cookies, health check, and 1 GB persistent disk for the SQLite database. The disk is required; do not switch this service to an ephemeral free instance. Render's persistent disk is single-instance storage, so keep the service at one instance.
+The Render Blueprint uses a Free web service and sets `INVESTIT_PREVIEW_MODE=1`. In preview mode, registrations and account pages work, but deposits, withdrawals, investments, dividends, and balance adjustments are disabled. The dashboard hides payment instructions and marks investment controls unavailable.
 
-1. Connect the public GitHub repository `amulesley628-collab/investIT` to Render as a new Blueprint. Review the service and persistent-disk pricing before confirming deployment.
-2. Future source changes must be committed and pushed to the repository's `main` branch to trigger updates. Git is not installed in this workspace, so use GitHub's web editor/upload flow or install Git before pushing locally.
-3. After the first deploy, open the service Shell and run `python server.py init-admin` to provision the business administrator. Do not make the first public signup an administrator.
-4. Set a custom domain in the Render service settings after registering it, then follow Render's displayed DNS instructions at your registrar. Domain registration and DNS changes are not included in this project.
+1. Create a Neon Free PostgreSQL project. The Free plan is permanent but intended for prototypes and side projects: it has a 1 GB project storage limit, scale-to-zero, no scheduled backups, and writes can stop when usage limits are reached. Do not use it for customer funds or production investor records.
+2. In Neon, copy the PostgreSQL connection string and keep it private. In the Render Blueprint setup, enter it as the `DATABASE_URL` secret when prompted. Use TLS (`sslmode=require`) and keep the database in a nearby region.
+3. Connect the public GitHub repository `amulesley628-collab/investIT` to Render as a Blueprint. The Blueprint generates the session secret and configures HTTPS cookies.
+4. Render Free has no service shell. To provision the administrator, set `DATABASE_URL` in a local PowerShell session to the Neon connection string, then run `python server.py init-admin`. This initializes the schema and prompts for the admin account. Never commit the connection string.
+5. Future source changes must be committed and pushed to the repository's `main` branch to trigger updates. Git is not installed in this workspace, so use GitHub's web editor/upload flow or install Git before pushing locally.
+6. A custom domain can be set in Render service settings after registration. Domain availability, purchase, trademark clearance, and registrar DNS changes are not included here.
 
 Candidate domain: `investitcapital.com`. Availability and trademark clearance have not been verified; confirm both before purchase or launch.
+
+Render Free services can spin down when idle. Neon Free database compute scales to zero after inactivity and has no scheduled backups. This deployment is for a restricted preview only, not a reliable production service.
 
 ## Payments and settlement
 
@@ -42,4 +46,4 @@ This version does not connect to MTN MoMo or another payment API. Deposit reques
 
 The business must verify and publish its legal entity and applicable Ghana SEC authorization, approved product/offer documents, complete risk disclosures, customer terms, privacy/data-retention policy, and complaint contact. The provided product amounts are the owner's supplied terms; this code cannot verify the license or the terms.
 
-Deploy only behind HTTPS with `INVESTIT_ENV=production`, a durable random `INVESTIT_SECRET_KEY`, and `INVESTIT_HTTPS=1`. Keep the app bound to localhost behind a maintained TLS reverse proxy, restrict server/database access, configure encrypted backups and monitoring, and test recovery. A production money service should integrate a contracted payment provider with signed webhook verification and idempotent settlement; this manual workflow does not itself transfer funds. Review the deployment, security controls, payment operations, licensing, and legal disclosures with qualified Ghanaian professionals before accepting public customers or funds.
+Before any paid production deployment, replace free-tier storage with a production database plan that includes backups and recovery, remove preview-mode restrictions only after payment processing and settlement are properly integrated, configure monitoring and access controls, and review licensing, terms, security, and data protection with qualified professionals. This manual workflow does not itself transfer funds. The free deployment must remain a preview.

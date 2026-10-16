@@ -3,7 +3,7 @@ services:
     name: investit-private-capital
     runtime: python
     region: frankfurt
-    plan: 0.5c-512mb
+    plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: python server.py
     healthCheckPath: /health
@@ -14,11 +14,9 @@ services:
         value: 0.0.0.0
       - key: INVESTIT_HTTPS
         value: "1"
-      - key: INVESTIT_DATABASE
-        value: /var/data/investit.sqlite3
+      - key: INVESTIT_PREVIEW_MODE
+        value: "1"
       - key: INVESTIT_SECRET_KEY
         generateValue: true
-    disk:
-      name: investit-data
-      mountPath: /var/data
-      sizeGB: 1
+      - key: DATABASE_URL
+        sync: false

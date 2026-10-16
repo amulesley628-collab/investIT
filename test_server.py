@@ -8,6 +8,8 @@ from werkzeug.security import generate_password_hash
 
 class ServerWorkflowTests(unittest.TestCase):
     def setUp(self):
+        self.preview_mode = server.PREVIEW_MODE
+        server.PREVIEW_MODE = False
         self.temporary_directory = tempfile.TemporaryDirectory()
         server.DATABASE = Path(self.temporary_directory.name) / "test.sqlite3"
         server.initialize_database()
@@ -38,6 +40,7 @@ class ServerWorkflowTests(unittest.TestCase):
         self.investor_id = response.json["user"]["id"]
 
     def tearDown(self):
+        server.PREVIEW_MODE = self.preview_mode
         server.app.testing = False
         self.temporary_directory.cleanup()
 
@@ -107,6 +110,44 @@ class ServerWorkflowTests(unittest.TestCase):
         response = self.investor.get("/health")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json["status"], "ok")
+
+    def test_free_preview_blocks_money_actions(self):
+        server.PREVIEW_MODE = True
+        dashboard = self.investor.get("/api/dashboard")
+        self.assertTrue(dashboard.json["preview_mode"])
+        self.assertEqual(dashboard.json["user"]["balance_pesewas"], 0)
+
+        requests = [
+            ("/api/deposits", {"amount": "20", "reference": "0241234567"}),
+            ("/api/withdrawals", {"amount": "1", "provider": "mtn", "phone": "0241234567"}),
+            ("/api/investments", {"product_id": "electrical-gadgets"}),
+        ]
+        for path, body in requests:
+            with self.subTest(path=path):
+                response = self.investor.post(path, json=body, headers=self._headers(self.investor_csrf))
+                self.assertEqual(response.status_code, 503)
+
+        response = self.admin.post(
+            f"/api/admin/users/{self.investor_id}/balance",
+            json={"action": "credit", "amount": "100", "note": "preview test"},
+            headers=self._headers(self.admin_csrf),
+        )
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(self.investor.get("/api/dashboard").json["user"]["balance_pesewas"], 0)
+
+    def test_postgres_adapter_translates_placeholders(self):
+        class RecordingConnection:
+            query = ""
+
+            def execute(self, query, parameters):
+                self.query = query
+                self.parameters = parameters
+
+        raw = RecordingConnection()
+        connection = server.DatabaseConnection(raw, postgres=True)
+        connection.execute("SELECT * FROM users WHERE id = ? AND phone = ?", ("id", "phone"))
+        self.assertEqual(raw.query, "SELECT * FROM users WHERE id = %s AND phone = %s")
+        self.assertEqual(raw.parameters, ("id", "phone"))
 
     def test_daily_dividends_are_credited_once_per_elapsed_day(self):
         started_at = int(server.time.time()) - 2 * 86400

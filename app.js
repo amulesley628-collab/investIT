@@ -11,6 +11,7 @@ let csrfToken = '';
 let currentUser = null;
 let dashboardData = null;
 let isSignup = false;
+let previewMode = false;
 let toastTimer;
 
 async function api(path, options = {}) {
@@ -76,7 +77,9 @@ function showApp(page = 'overview') {
 }
 
 function productCard(product) {
-  return `<article class="product"><div class="product-top"><span class="product-icon">${productIcons[product.id] || '◈'}</span><span class="term-tag">${product.duration_days} DAYS</span></div><h3>${esc(product.name)}</h3><p>Daily dividend · subject to product terms</p><div class="product-bottom"><div><div class="product-price">${fmt(product.price_pesewas)} <small>ENTRY</small></div><div class="daily">${fmt(product.daily_pesewas)} / day</div></div><button class="buy-btn" data-buy="${esc(product.id)}">Invest</button></div></article>`;
+  const action = previewMode ? 'disabled title="Unavailable in preview"' : `data-buy="${esc(product.id)}"`;
+  const label = previewMode ? 'Preview only' : 'Invest';
+  return `<article class="product"><div class="product-top"><span class="product-icon">${productIcons[product.id] || '◈'}</span><span class="term-tag">${product.duration_days} DAYS</span></div><h3>${esc(product.name)}</h3><p>Daily dividend · subject to product terms</p><div class="product-bottom"><div><div class="product-price">${fmt(product.price_pesewas)} <small>ENTRY</small></div><div class="daily">${fmt(product.daily_pesewas)} / day</div></div><button class="buy-btn" ${action}>${label}</button></div></article>`;
 }
 
 function activityRow(transaction) {
@@ -96,6 +99,18 @@ function renderDashboard(data) {
   const page = $('.page-section.active')?.id.replace('page-', '') || 'overview';
   dashboardData = data;
   currentUser = data.user;
+  previewMode = Boolean(data.preview_mode);
+  let previewNotice = $('#previewNotice');
+  if (previewMode && !previewNotice) {
+    previewNotice = document.createElement('div');
+    previewNotice.id = 'previewNotice';
+    previewNotice.className = 'admin-banner';
+    previewNotice.textContent = 'Free preview deployment: account and product screens only. Deposits, withdrawals, investments and dividends are disabled. Do not send money. Free hosting may sleep or suspend when provider limits are reached.';
+    $('.content-grid').before(previewNotice);
+  }
+  if (previewNotice) previewNotice.classList.toggle('hidden', !previewMode);
+  $('.quick-actions').closest('.panel').classList.toggle('hidden', previewMode);
+  $('.deposit-card').closest('.panel').classList.toggle('hidden', previewMode);
   const now = Date.now() / 1000;
   const active = data.investments.filter((investment) => now < investment.started_at + investment.duration_days * 86400);
   const invested = active.reduce((sum, investment) => sum + investment.price_pesewas, 0);
